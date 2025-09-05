@@ -6,61 +6,83 @@ import plotly.express as px
 from urllib.parse import urljoin, urlparse
 import subprocess
 import os
+import time
 
 # Fix for Windows event loop policy issue
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-def install_playwright_browsers():
-    """Install Playwright browsers if they don't exist"""
+@st.cache_resource
+def install_playwright():
+    """Install Playwright browsers - cached to run only once"""
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], 
-                      check=True, capture_output=True, text=True)
-        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], 
-                      check=True, capture_output=True, text=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"Failed to install browsers: {e}")
+        with st.spinner("Installing browser dependencies... This may take 2-3 minutes on first run."):
+            # Install Playwright browsers
+            result1 = subprocess.run([
+                sys.executable, "-m", "playwright", "install", "chromium"
+            ], capture_output=True, text=True, timeout=300)
+            
+            # Install system dependencies
+            result2 = subprocess.run([
+                sys.executable, "-m", "playwright", "install-deps"
+            ], capture_output=True, text=True, timeout=300)
+            
+            if result1.returncode == 0 and result2.returncode == 0:
+                st.success("✅ Browser dependencies installed successfully!")
+                return True
+            else:
+                st.error(f"Browser install failed: {result1.stderr} {result2.stderr}")
+                return False
+                
+    except subprocess.TimeoutExpired:
+        st.error("⏱️ Installation timed out. Please try refreshing the page.")
         return False
     except Exception as e:
-        st.error(f"Error installing browsers: {e}")
+        st.error(f"Installation error: {e}")
         return False
 
-# Try to import playwright, install browsers if needed
+def check_playwright_installation():
+    """Check if Playwright browsers are installed"""
+    try:
+        from playwright.async_api import async_playwright
+        # Try to get browser path
+        result = subprocess.run([
+            sys.executable, "-m", "playwright", "show-browsers"
+        ], capture_output=True, text=True, timeout=10)
+        return "chromium" in result.stdout.lower()
+    except:
+        return False
+
+# Try to import playwright
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
-    st.error("Playwright is not installed. Please install it using: pip install playwright")
-    PLAYWRIGHT_AVAILABLE = False
+    st.error("❌ Playwright is not installed. Please check your requirements.txt")
+    st.stop()
 
 class LinkCrawler:
-    def __init__(self, headless=True, timeout=300000):
+    def __init__(self, headless=True, timeout=30000):
         self.headless = headless
         self.timeout = timeout
         self.browser = None
         self.context = None
 
     async def __aenter__(self):
-        if not PLAYWRIGHT_AVAILABLE:
-            raise Exception("Playwright is not available")
+        self.playwright = await async_playwright().start()
         
-        try:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        except Exception as e:
-            # Try to install browsers if launch fails
-            if "Executable doesn't exist" in str(e):
-                st.info("Installing browser dependencies... This may take a moment.")
-                if install_playwright_browsers():
-                    # Retry after installation
-                    self.playwright = await async_playwright().start()
-                    self.browser = await self.playwright.chromium.launch(headless=self.headless)
-                else:
-                    raise Exception("Could not install required browser dependencies")
-            else:
-                raise e
-                
+        # Launch browser with additional args for cloud deployment
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor'
+            ]
+        )
+        
         self.context = await self.browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -95,8 +117,8 @@ class LinkCrawler:
             page.set_default_timeout(self.timeout)
 
             print(f"Loading source page: {source_url}")
-            await page.goto(source_url, wait_until="networkidle")
-            await page.wait_for_timeout(5000)  # wait for dynamic content
+            await page.goto(source_url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)  # Reduced wait time
 
             links = await page.query_selector_all("[href]")
             print(f"Found {len(links)} total links")
@@ -182,10 +204,12 @@ def process_results(results, source_url, limit):
 st.set_page_config(page_title="🔗 Link Distribution Dashboard", layout="wide")
 st.title("🔗 Link Distribution Dashboard")
 
-# Check if Playwright is available
-if not PLAYWRIGHT_AVAILABLE:
-    st.error("❌ Playwright is not installed. Please install it first.")
-    st.stop()
+# Check if browsers are installed
+if not check_playwright_installation():
+    st.warning("⚠️ Browser dependencies not found. Installing...")
+    if not install_playwright():
+        st.error("❌ Failed to install browser dependencies. Please try refreshing the page.")
+        st.stop()
 
 st.sidebar.title("Crawler Settings")
 url_input = st.sidebar.text_input("Enter a website URL to crawl:")
@@ -199,11 +223,11 @@ if run_crawl and url_input:
             df = process_results(results, url_input, result_limit)
         except Exception as e:
             st.error(f"❌ Error: {e}")
-            st.info("💡 If you're seeing browser installation errors, try restarting the app.")
+            st.info("💡 Try refreshing the page or check if the URL is accessible.")
             df = pd.DataFrame()
 
     if not df.empty:
-        st.subheader("Key Metrics")
+        st.subheader("📊 Key Metrics")
 
         total_links = df["count"].sum()
         unique_texts = df["anchor_text"].nunique()
@@ -214,7 +238,7 @@ if run_crawl and url_input:
         col2.metric("Unique Anchor Texts", unique_texts)
         col3.metric("Top Anchor Text", top_anchor)
 
-        st.subheader("Anchor Text Distribution")
+        st.subheader("📈 Anchor Text Distribution")
 
         fig = px.pie(
             df,
@@ -228,4 +252,20 @@ if run_crawl and url_input:
             st.dataframe(df, use_container_width=True, hide_index=True)
 
     else:
-        st.info("No data available yet. Try crawling first.")
+        st.info("ℹ️ No data available yet. Enter a URL and click 'Run Crawler' to get started!")
+
+# Add some helpful information
+with st.expander("ℹ️ How to use"):
+    st.markdown("""
+    1. **Enter a URL** in the sidebar (e.g., https://example.com)
+    2. **Set the result limit** for how many results to display
+    3. **Click 'Run Crawler'** to start analyzing links
+    
+    The tool will:
+    - Extract all internal links from the page
+    - Count occurrences of each anchor text
+    - Display results in an interactive pie chart
+    - Show detailed data in a table
+    
+    **Note**: First run may take longer as browser dependencies are installed.
+    """)
