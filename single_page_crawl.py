@@ -191,32 +191,33 @@ class SimpleHTTPCrawler:
 # =============================
 # Helpers
 # =============================
-def process_results(results, source_url, limit):
+def process_results(results, source_url, limit, exact_anchor=None):
     links = results.get(source_url, [])
     if not links:
         return pd.DataFrame(columns=["init_url", "anchor_text", "href", "count"])
 
     df = pd.DataFrame(links)
+    if "anchor_text" not in df.columns:
+        df["anchor_text"] = ""
+    df["anchor_text"] = df["anchor_text"].astype(str).str.strip()
 
-    # Only keep visible elements
+    # only visible
     if "is_visible" in df.columns:
         df = df[df["is_visible"] == True]
 
-    # Exclude empty or "[No text]" anchors
-    df = df[df["anchor_text"].str.strip() != ""]
+    # no empty or [No text]
+    df = df[df["anchor_text"] != ""]
     df = df[df["anchor_text"] != "[No text]"]
 
-    # ⚡ Keep exact anchors — no fuzzy grouping
-    df_grouped = (
-        df.groupby(["init_url", "anchor_text", "href"], as_index=False)
-        .size()
-        .reset_index(name="count")
-        .sort_values("count", ascending=False)
-        .head(limit)
-    )
+    # exact filter
+    if exact_anchor:
+        df = df[df["anchor_text"] == exact_anchor.strip()]
 
-    return df_grouped
+    grouped = df.groupby(["init_url", "anchor_text", "href"]).size().reset_index()
+    grouped = grouped.rename(columns={0: "count"})
+    grouped = grouped.sort_values("count", ascending=False).head(limit)
 
+    return grouped[["init_url", "anchor_text", "href", "count"]]
 
 
 # =============================
@@ -233,6 +234,7 @@ else:
 st.sidebar.title("Crawler Settings")
 url_input = st.sidebar.text_input("Enter a website URL to crawl:")
 result_limit = st.sidebar.number_input("Max results to show:", 1, 100, 10)
+exact_anchor_input = st.sidebar.text_input("Exact anchor text filter (optional):")
 run_crawl = st.sidebar.button("🚀 Run Crawler")
 
 if run_crawl and url_input:
@@ -243,7 +245,7 @@ if run_crawl and url_input:
             else:
                 results = SimpleHTTPCrawler().get_links(url_input)
 
-            df = process_results(results, url_input, result_limit)
+            df = process_results(results, url_input, result_limit, exact_anchor_input or None)
         except Exception as e:
             st.error(f"❌ Error: {e}")
             df = pd.DataFrame()
