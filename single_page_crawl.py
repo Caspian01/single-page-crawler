@@ -197,17 +197,26 @@ def process_results(results, source_url, limit):
         return pd.DataFrame(columns=["init_url", "anchor_text", "href", "count"])
 
     df = pd.DataFrame(links)
+
+    # Only keep visible elements
+    if "is_visible" in df.columns:
+        df = df[df["is_visible"] == True]
+
+    # Exclude empty or "[No text]" anchors
     df = df[df["anchor_text"].str.strip() != ""]
     df = df[df["anchor_text"] != "[No text]"]
 
+    # ⚡ Keep exact anchors — no fuzzy grouping
     df_grouped = (
-        df.groupby(["init_url", "anchor_text", "href"])
+        df.groupby(["init_url", "anchor_text", "href"], as_index=False)
         .size()
         .reset_index(name="count")
         .sort_values("count", ascending=False)
         .head(limit)
     )
+
     return df_grouped
+
 
 
 # =============================
