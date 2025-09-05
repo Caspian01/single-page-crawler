@@ -1,6 +1,5 @@
-asyncio ; python_version < "3.11"
-matplotlib
-pandas
-playwright
 streamlit
+pandas
 plotly
+matplotlib
+playwright
