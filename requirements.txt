@@ -3,3 +3,6 @@ pandas
 plotly
 matplotlib
 playwright
+requests
+beautifulsoup4
+lxml
