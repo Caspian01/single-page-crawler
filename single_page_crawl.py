@@ -4,12 +4,35 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 from urllib.parse import urljoin, urlparse
-from playwright.async_api import async_playwright
+import subprocess
+import os
 
 # Fix for Windows event loop policy issue
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+def install_playwright_browsers():
+    """Install Playwright browsers if they don't exist"""
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], 
+                      check=True, capture_output=True, text=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install-deps"], 
+                      check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        st.error(f"Failed to install browsers: {e}")
+        return False
+    except Exception as e:
+        st.error(f"Error installing browsers: {e}")
+        return False
+
+# Try to import playwright, install browsers if needed
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    st.error("Playwright is not installed. Please install it using: pip install playwright")
+    PLAYWRIGHT_AVAILABLE = False
 
 class LinkCrawler:
     def __init__(self, headless=True, timeout=300000):
@@ -19,8 +42,25 @@ class LinkCrawler:
         self.context = None
 
     async def __aenter__(self):
-        self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+        if not PLAYWRIGHT_AVAILABLE:
+            raise Exception("Playwright is not available")
+        
+        try:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(headless=self.headless)
+        except Exception as e:
+            # Try to install browsers if launch fails
+            if "Executable doesn't exist" in str(e):
+                st.info("Installing browser dependencies... This may take a moment.")
+                if install_playwright_browsers():
+                    # Retry after installation
+                    self.playwright = await async_playwright().start()
+                    self.browser = await self.playwright.chromium.launch(headless=self.headless)
+                else:
+                    raise Exception("Could not install required browser dependencies")
+            else:
+                raise e
+                
         self.context = await self.browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -142,6 +182,11 @@ def process_results(results, source_url, limit):
 st.set_page_config(page_title="🔗 Link Distribution Dashboard", layout="wide")
 st.title("🔗 Link Distribution Dashboard")
 
+# Check if Playwright is available
+if not PLAYWRIGHT_AVAILABLE:
+    st.error("❌ Playwright is not installed. Please install it first.")
+    st.stop()
+
 st.sidebar.title("Crawler Settings")
 url_input = st.sidebar.text_input("Enter a website URL to crawl:")
 result_limit = st.sidebar.number_input("Max results to show:", min_value=1, max_value=100, value=10, step=1)
@@ -153,7 +198,8 @@ if run_crawl and url_input:
             results = asyncio.run(main(url_input))
             df = process_results(results, url_input, result_limit)
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"❌ Error: {e}")
+            st.info("💡 If you're seeing browser installation errors, try restarting the app.")
             df = pd.DataFrame()
 
     if not df.empty:
@@ -178,7 +224,7 @@ if run_crawl and url_input:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("🔎 Show Anchor Text Details"):
+        with st.expander("🔍 Show Anchor Text Details"):
             st.dataframe(df, use_container_width=True, hide_index=True)
 
     else:
